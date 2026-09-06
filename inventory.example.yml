@@ -1,0 +1,43 @@
+---
+all:
+  vars:
+    ansible_user: ubuntu
+    ansible_ssh_private_key_file: /absolute/path/to/private-key
+  children:
+    kafka:
+      hosts:
+        kafka-1:
+          ansible_host: 10.0.0.11
+          private_ip: 10.0.0.11
+          kafka_node_id: 1
+        kafka-2:
+          ansible_host: 10.0.0.12
+          private_ip: 10.0.0.12
+          kafka_node_id: 2
+        kafka-3:
+          ansible_host: 10.0.0.13
+          private_ip: 10.0.0.13
+          kafka_node_id: 3
+    spark_master:
+      hosts:
+        spark-master:
+          ansible_host: 10.0.0.21
+          private_ip: 10.0.0.21
+    spark_workers:
+      hosts:
+        spark-worker-1:
+          ansible_host: 10.0.0.22
+          private_ip: 10.0.0.22
+        spark-worker-2:
+          ansible_host: 10.0.0.23
+          private_ip: 10.0.0.23
+    controller:
+      hosts:
+        experiment-controller:
+          ansible_host: 10.0.0.31
+          private_ip: 10.0.0.31
+    cluster:
+      children:
+        kafka:
+        spark_master:
+        spark_workers:

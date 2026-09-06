@@ -1,0 +1,53 @@
+---
+- name: Capture reproducible Wikimedia and Binance source data
+  hosts: controller
+  become: true
+  vars:
+    capture_command: "{{ project_path }}/.venv/bin/bigdata-capture"
+  pre_tasks:
+    - name: Require a real Wikimedia contact
+      ansible.builtin.assert:
+        that:
+          - wikimedia_user_agent is not search('replace-with-real-contact')
+        fail_msg: Set a real contact in wikimedia_user_agent before capture.
+
+  tasks:
+    - name: Capture Wikimedia recent changes
+      ansible.builtin.command:
+        argv:
+          - "{{ capture_command }}"
+          - wikimedia
+          - --output-dir
+          - "{{ capture_path }}"
+          - --duration-seconds
+          - "{{ capture_duration_seconds | string }}"
+          - --max-events
+          - "{{ capture_max_events | string }}"
+          - --user-agent
+          - "{{ wikimedia_user_agent }}"
+      become_user: "{{ ansible_user }}"
+      register: wikimedia_capture
+      changed_when: true
+
+    - name: Capture Binance aggregate trades
+      ansible.builtin.command:
+        argv:
+          - "{{ capture_command }}"
+          - binance
+          - --output-dir
+          - "{{ capture_path }}"
+          - --duration-seconds
+          - "{{ capture_duration_seconds | string }}"
+          - --max-events
+          - "{{ capture_max_events | string }}"
+          - --symbols
+          - "{{ binance_symbols | join(',') }}"
+      become_user: "{{ ansible_user }}"
+      register: binance_capture
+      changed_when: true
+
+    - name: Show immutable capture manifests
+      ansible.builtin.debug:
+        msg:
+          wikimedia: "{{ wikimedia_capture.stdout_lines | last }}"
+          binance: "{{ binance_capture.stdout_lines | last }}"

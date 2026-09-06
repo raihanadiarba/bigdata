@@ -1,0 +1,68 @@
+---
+- name: Verify node exporters
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Check node exporter endpoint from controller
+      ansible.builtin.uri:
+        url: "http://{{ private_ip }}:9100/metrics"
+        return_content: false
+        status_code: 200
+      delegate_to: "{{ groups['controller'][0] }}"
+
+- name: Verify Kafka cluster and topics
+  hosts: kafka[0]
+  become: true
+  vars:
+    kafka_home: "{{ kafka_install_root }}/kafka_{{ kafka_scala_version }}-{{ kafka_version }}"
+  tasks:
+    - name: Describe Wikimedia topic
+      ansible.builtin.command:
+        cmd: >-
+          {{ kafka_home }}/bin/kafka-topics.sh --bootstrap-server {{ private_ip }}:9092
+          --describe --topic workload-wikimedia
+      changed_when: false
+      register: wikimedia_topic
+
+    - name: Describe Binance topic
+      ansible.builtin.command:
+        cmd: >-
+          {{ kafka_home }}/bin/kafka-topics.sh --bootstrap-server {{ private_ip }}:9092
+          --describe --topic workload-binance
+      changed_when: false
+      register: binance_topic
+
+    - name: Require six partitions and replication factor three
+      ansible.builtin.assert:
+        that:
+          - "'PartitionCount: 6' in wikimedia_topic.stdout"
+          - "'ReplicationFactor: 3' in wikimedia_topic.stdout"
+          - "'PartitionCount: 6' in binance_topic.stdout"
+          - "'ReplicationFactor: 3' in binance_topic.stdout"
+
+- name: Verify Spark master
+  hosts: controller
+  gather_facts: false
+  tasks:
+    - name: Check Spark master port
+      ansible.builtin.wait_for:
+        host: "{{ hostvars[groups['spark_master'][0]].private_ip }}"
+        port: 7077
+        timeout: 30
+
+    - name: Check Prometheus
+      ansible.builtin.uri:
+        url: http://127.0.0.1:9090/-/ready
+        status_code: 200
+
+    - name: Read generated experiment configuration
+      ansible.builtin.slurp:
+        src: /etc/spark-kafka-research/experiment.yml
+      register: experiment_configuration
+
+    - name: Require final stream load values
+      ansible.builtin.assert:
+        that:
+          - "'low: 1000' in (experiment_configuration.content | b64decode)"
+          - "'medium: 5000' in (experiment_configuration.content | b64decode)"
+          - "'high: 10000' in (experiment_configuration.content | b64decode)"

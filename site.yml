@@ -1,0 +1,8 @@
+---
+- import_playbook: playbooks/preflight.yml
+- import_playbook: playbooks/common.yml
+- import_playbook: playbooks/kafka.yml
+- import_playbook: playbooks/spark.yml
+- import_playbook: playbooks/controller.yml
+- import_playbook: playbooks/stream-config.yml
+- import_playbook: playbooks/verify.yml

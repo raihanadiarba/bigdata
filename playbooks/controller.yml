@@ -1,0 +1,148 @@
+---
+- name: Install experiment controller and monitoring
+  hosts: controller
+  become: true
+  tasks:
+    - name: Install controller packages
+      ansible.builtin.apt:
+        name:
+          - docker.io
+          - docker-compose-v2
+          - git
+          - python3-pip
+          - python3-venv
+        state: present
+        update_cache: true
+
+    - name: Enable Docker
+      ansible.builtin.systemd_service:
+        name: docker
+        enabled: true
+        state: started
+
+    - name: Clone research repository
+      ansible.builtin.git:
+        repo: "{{ project_repository_url }}"
+        dest: "{{ project_path }}"
+        version: "{{ project_version }}"
+        force: false
+
+    - name: Install uv in an isolated environment
+      ansible.builtin.pip:
+        name: uv
+        virtualenv: /opt/uv-runtime
+        virtualenv_command: python3 -m venv
+
+    - name: Link uv into PATH
+      ansible.builtin.file:
+        src: /opt/uv-runtime/bin/uv
+        dest: /usr/local/bin/uv
+        state: link
+
+    - name: Synchronize project dependencies
+      ansible.builtin.command:
+        cmd: /usr/local/bin/uv sync --extra dev --frozen
+        chdir: "{{ project_path }}"
+      changed_when: true
+
+    - name: Generate cloud scenarios
+      ansible.builtin.command:
+        cmd: /usr/local/bin/uv run bigdata-runner expand-cloud-matrix config/cloud-test-matrix.yaml
+        chdir: "{{ project_path }}"
+      changed_when: true
+
+    - name: Create monitoring directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - /opt/bigdata-monitoring
+        - /opt/bigdata-monitoring/grafana/provisioning/datasources
+
+    - name: Write Prometheus configuration
+      ansible.builtin.copy:
+        dest: /opt/bigdata-monitoring/prometheus.yml
+        mode: "0644"
+        content: |
+          global:
+            scrape_interval: 15s
+          scrape_configs:
+            - job_name: nodes
+              static_configs:
+                - targets:
+          {% for host in groups['cluster'] %}
+                    - "{{ hostvars[host].private_ip }}:9100"
+          {% endfor %}
+                  labels:
+                    profile: "{{ deployment_profile }}"
+            - job_name: controller
+              static_configs:
+                - targets: ["{{ private_ip }}:9100"]
+            - job_name: kafka
+              static_configs:
+                - targets: ["127.0.0.1:9308"]
+            - job_name: spark_application
+              static_configs:
+                - targets: ["127.0.0.1:9102"]
+
+    - name: Provision Grafana Prometheus datasource
+      ansible.builtin.copy:
+        dest: /opt/bigdata-monitoring/grafana/provisioning/datasources/prometheus.yml
+        mode: "0644"
+        content: |
+          apiVersion: 1
+          datasources:
+            - name: Prometheus
+              type: prometheus
+              access: proxy
+              url: http://127.0.0.1:9090
+              isDefault: true
+
+    - name: Write monitoring Compose file
+      ansible.builtin.copy:
+        dest: /opt/bigdata-monitoring/compose.yml
+        mode: "0644"
+        content: |
+          services:
+            prometheus:
+              image: {{ prometheus_image }}
+              network_mode: host
+              command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=30d"]
+              volumes:
+                - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+                - prometheus-data:/prometheus
+              restart: unless-stopped
+            grafana:
+              image: {{ grafana_image }}
+              network_mode: host
+              environment:
+                GF_AUTH_ANONYMOUS_ENABLED: "false"
+              volumes:
+                - ./grafana/provisioning:/etc/grafana/provisioning:ro
+                - grafana-data:/var/lib/grafana
+              restart: unless-stopped
+            kafka-exporter:
+              image: {{ kafka_exporter_image }}
+              network_mode: host
+              command:
+          {% for host in groups['kafka'] %}
+                - "--kafka.server={{ hostvars[host].private_ip }}:9092"
+          {% endfor %}
+              restart: unless-stopped
+          volumes:
+            prometheus-data:
+            grafana-data:
+
+    - name: Start monitoring stack
+      ansible.builtin.command:
+        cmd: docker compose -f compose.yml up -d
+        chdir: /opt/bigdata-monitoring
+      changed_when: true
+
+    - name: Allow Grafana only from administrator network
+      community.general.ufw:
+        rule: allow
+        port: "3000"
+        proto: tcp
+        src: "{{ admin_cidr }}"

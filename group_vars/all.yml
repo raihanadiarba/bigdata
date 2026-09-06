@@ -1,0 +1,53 @@
+---
+deployment_profile: low
+private_network_cidr: 10.0.0.0/24
+admin_cidr: 203.0.113.10/32
+
+kafka_version: 4.1.1
+kafka_scala_version: "2.13"
+kafka_cluster_id: MkU3OEVBNTcwNTJENDM2Qk
+kafka_install_root: /opt
+kafka_data_dir: /var/lib/kafka/data
+kafka_log_dir: /var/log/kafka
+kafka_heap_gb:
+  low: 2
+  medium: 4
+  high: 16
+
+spark_version: 4.0.1
+spark_install_root: /opt
+spark_worker_memory:
+  low: 2g
+  medium: 6g
+  high: 26g
+spark_worker_cores:
+  low: 2
+  medium: 4
+  high: 8
+
+node_exporter_version: 1.9.1
+prometheus_image: prom/prometheus:v3.5.0
+grafana_image: grafana/grafana:12.1.0
+kafka_exporter_image: danielqsj/kafka-exporter:v1.9.0
+
+project_repository_url: https://example.invalid/replace-with-project-repository.git
+project_version: main
+project_path: /opt/spark-kafka-research
+results_path: /srv/bigdata-results
+capture_path: /srv/bigdata-captures
+experiment_duration_seconds: 1200
+capture_duration_seconds: 900
+capture_max_events: 100000
+wikimedia_user_agent: SparkKafkaResearch/1.0 (replace-with-real-contact@example.com)
+binance_symbols:
+  - BTCUSDT
+  - ETHUSDT
+  - BNBUSDT
+load_profiles:
+  low: 1000
+  medium: 5000
+  high: 10000
+
+topic_partitions: 6
+topic_replication_factor: 3
+minimum_insync_replicas: 2

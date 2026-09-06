@@ -1,0 +1,99 @@
+---
+- name: Install Spark on master and workers
+  hosts: spark_master:spark_workers
+  become: true
+  vars:
+    spark_archive: "spark-{{ spark_version }}-bin-hadoop3.tgz"
+    spark_home: "{{ spark_install_root }}/spark-{{ spark_version }}-bin-hadoop3"
+    spark_master_ip: "{{ hostvars[groups['spark_master'][0]].private_ip }}"
+  tasks:
+    - name: Create Spark system user
+      ansible.builtin.user:
+        name: spark
+        system: true
+        home: /var/lib/spark
+        shell: /usr/sbin/nologin
+
+    - name: Download Spark
+      ansible.builtin.get_url:
+        url: "https://archive.apache.org/dist/spark/spark-{{ spark_version }}/{{ spark_archive }}"
+        dest: "/tmp/{{ spark_archive }}"
+        mode: "0644"
+
+    - name: Extract Spark
+      ansible.builtin.unarchive:
+        src: "/tmp/{{ spark_archive }}"
+        dest: "{{ spark_install_root }}"
+        remote_src: true
+        creates: "{{ spark_home }}"
+
+    - name: Create Spark data directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: spark
+        group: spark
+        mode: "0750"
+      loop:
+        - /var/lib/spark
+        - /var/log/spark
+        - "{{ results_path }}"
+
+    - name: Install Spark master service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/spark-master.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Apache Spark Master
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          User=spark
+          Group=spark
+          ExecStart={{ spark_home }}/bin/spark-class org.apache.spark.deploy.master.Master --host {{ private_ip }} --port 7077 --webui-port 8080
+          Restart=on-failure
+
+          [Install]
+          WantedBy=multi-user.target
+      when: inventory_hostname in groups['spark_master']
+      notify: Restart Spark master
+
+    - name: Install Spark worker service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/spark-worker.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Apache Spark Worker
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          User=spark
+          Group=spark
+          Environment=SPARK_WORKER_MEMORY={{ spark_worker_memory[deployment_profile] }}
+          Environment=SPARK_WORKER_CORES={{ spark_worker_cores[deployment_profile] }}
+          ExecStart={{ spark_home }}/bin/spark-class org.apache.spark.deploy.worker.Worker --host {{ private_ip }} --port 7078 --webui-port 8081 spark://{{ spark_master_ip }}:7077
+          Restart=on-failure
+
+          [Install]
+          WantedBy=multi-user.target
+      when: inventory_hostname in groups['spark_workers']
+      notify: Restart Spark worker
+
+  handlers:
+    - name: Restart Spark master
+      ansible.builtin.systemd_service:
+        name: spark-master
+        enabled: true
+        state: restarted
+        daemon_reload: true
+
+    - name: Restart Spark worker
+      ansible.builtin.systemd_service:
+        name: spark-worker
+        enabled: true
+        state: restarted
+        daemon_reload: true

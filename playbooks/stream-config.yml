@@ -1,0 +1,136 @@
+---
+- name: Configure stream capture, replay, and experiment defaults
+  hosts: controller
+  become: true
+  vars:
+    kafka_bootstrap_servers: >-
+      {%- for host in groups['kafka'] -%}
+      {{ hostvars[host].private_ip }}:9092{{ ',' if not loop.last else '' }}
+      {%- endfor -%}
+    spark_master_url: "spark://{{ hostvars[groups['spark_master'][0]].private_ip }}:7077"
+  tasks:
+    - name: Create experiment directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0750"
+      loop:
+        - /etc/spark-kafka-research
+        - "{{ results_path }}"
+        - "{{ capture_path }}"
+
+    - name: Write machine-readable experiment configuration
+      ansible.builtin.copy:
+        dest: /etc/spark-kafka-research/experiment.yml
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0640"
+        content: |
+          kafka:
+            bootstrap_servers: "{{ kafka_bootstrap_servers }}"
+            topics:
+              wikimedia: workload-wikimedia
+              binance: workload-binance
+            partitions: {{ topic_partitions }}
+            replication_factor: {{ topic_replication_factor }}
+            minimum_insync_replicas: {{ minimum_insync_replicas }}
+          spark:
+            master_url: "{{ spark_master_url }}"
+            master_nodes: 1
+            worker_nodes: 2
+          experiment:
+            profile: "{{ deployment_profile }}"
+            duration_seconds: {{ experiment_duration_seconds }}
+            repetitions: 3
+            scenario_directory: "{{ project_path }}/config/cloud-generated"
+            run_plan: "{{ project_path }}/config/cloud-generated/run-plan.csv"
+            results_path: "{{ results_path }}"
+            capture_path: "{{ capture_path }}"
+            load_profiles:
+              low: {{ load_profiles.low }}
+              medium: {{ load_profiles.medium }}
+              high: {{ load_profiles.high }}
+          sources:
+            wikimedia:
+              stream: recentchange
+              endpoint: https://stream.wikimedia.org/v2/stream/recentchange
+            binance:
+              stream: aggTrade
+              endpoint: wss://stream.binance.com:9443/stream
+              symbols: {{ binance_symbols | to_json }}
+
+    - name: Write runtime environment
+      ansible.builtin.copy:
+        dest: /etc/spark-kafka-research/runtime.env
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0640"
+        content: |
+          KAFKA_BOOTSTRAP_SERVERS={{ kafka_bootstrap_servers }}
+          SPARK_MASTER_URL={{ spark_master_url }}
+          RESULTS_PATH={{ results_path }}
+          CAPTURE_ROOT={{ capture_path }}
+          SCENARIO_ROOT={{ project_path }}/config/cloud-generated
+
+    - name: Regenerate cloud scenario files
+      ansible.builtin.command:
+        cmd: /usr/local/bin/uv run bigdata-runner expand-cloud-matrix config/cloud-test-matrix.yaml
+        chdir: "{{ project_path }}"
+      become_user: "{{ ansible_user }}"
+      changed_when: true
+
+    - name: Validate generated scenarios
+      ansible.builtin.shell:
+        cmd: >-
+          /usr/local/bin/uv run bigdata-runner validate config/cloud-generated/*.yaml
+        chdir: "{{ project_path }}"
+      become_user: "{{ ansible_user }}"
+      changed_when: false
+
+    - name: Report generated run count
+      ansible.builtin.shell:
+        cmd: "set -o pipefail && tail -n +2 config/cloud-generated/run-plan.csv | wc -l"
+        chdir: "{{ project_path }}"
+        executable: /bin/bash
+      become_user: "{{ ansible_user }}"
+      changed_when: false
+      register: generated_run_count
+
+    - name: Require exactly 54 generated runs
+      ansible.builtin.assert:
+        that:
+          - generated_run_count.stdout | int == 54
+        fail_msg: Cloud matrix must contain exactly 54 runs.
+
+- name: Configure Spark defaults for the experiment
+  hosts: spark_master:spark_workers
+  become: true
+  vars:
+    spark_home: "{{ spark_install_root }}/spark-{{ spark_version }}-bin-hadoop3"
+    spark_master_url: "spark://{{ hostvars[groups['spark_master'][0]].private_ip }}:7077"
+  tasks:
+    - name: Write Spark defaults
+      ansible.builtin.copy:
+        dest: "{{ spark_home }}/conf/spark-defaults.conf"
+        owner: spark
+        group: spark
+        mode: "0640"
+        content: |
+          spark.master                          {{ spark_master_url }}
+          spark.serializer                      org.apache.spark.serializer.KryoSerializer
+          spark.sql.session.timeZone            UTC
+          spark.sql.shuffle.partitions          {{ topic_partitions }}
+          spark.executor.cores                  {{ spark_worker_cores[deployment_profile] }}
+          spark.executor.memory                 {{ spark_worker_memory[deployment_profile] }}
+          spark.eventLog.enabled                true
+          spark.eventLog.dir                    file:///var/lib/spark/events
+
+    - name: Create Spark event log directory
+      ansible.builtin.file:
+        path: /var/lib/spark/events
+        state: directory
+        owner: spark
+        group: spark
+        mode: "0750"

@@ -1,0 +1,98 @@
+---
+- name: Install common packages, time sync, firewall, and node exporter
+  hosts: all
+  become: true
+  tasks:
+    - name: Install common packages
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - chrony
+          - curl
+          - openjdk-17-jre-headless
+          - python3
+          - tar
+          - ufw
+        state: present
+        update_cache: true
+
+    - name: Enable time synchronization
+      ansible.builtin.systemd_service:
+        name: chrony
+        enabled: true
+        state: started
+
+    - name: Allow SSH from administrator network
+      community.general.ufw:
+        rule: allow
+        port: "22"
+        proto: tcp
+        src: "{{ admin_cidr }}"
+
+    - name: Allow all private cluster traffic
+      community.general.ufw:
+        rule: allow
+        src: "{{ private_network_cidr }}"
+
+    - name: Set default incoming firewall policy
+      community.general.ufw:
+        direction: incoming
+        policy: deny
+
+    - name: Enable firewall
+      community.general.ufw:
+        state: enabled
+
+    - name: Select node exporter architecture
+      ansible.builtin.set_fact:
+        node_exporter_arch: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64'}[ansible_architecture] }}"
+
+    - name: Download node exporter
+      ansible.builtin.get_url:
+        url: >-
+          https://github.com/prometheus/node_exporter/releases/download/v{{ node_exporter_version }}/
+          node_exporter-{{ node_exporter_version }}.linux-{{ node_exporter_arch }}.tar.gz
+        dest: /tmp/node-exporter.tar.gz
+        mode: "0644"
+
+    - name: Extract node exporter
+      ansible.builtin.unarchive:
+        src: /tmp/node-exporter.tar.gz
+        dest: /tmp
+        remote_src: true
+        creates: "/tmp/node_exporter-{{ node_exporter_version }}.linux-{{ node_exporter_arch }}"
+
+    - name: Install node exporter binary
+      ansible.builtin.copy:
+        src: "/tmp/node_exporter-{{ node_exporter_version }}.linux-{{ node_exporter_arch }}/node_exporter"
+        dest: /usr/local/bin/node_exporter
+        mode: "0755"
+        remote_src: true
+      notify: Restart node exporter
+
+    - name: Install node exporter service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/node-exporter.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Prometheus Node Exporter
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          User=nobody
+          ExecStart=/usr/local/bin/node_exporter
+          Restart=on-failure
+
+          [Install]
+          WantedBy=multi-user.target
+      notify: Restart node exporter
+
+  handlers:
+    - name: Restart node exporter
+      ansible.builtin.systemd_service:
+        name: node-exporter
+        enabled: true
+        state: restarted
+        daemon_reload: true

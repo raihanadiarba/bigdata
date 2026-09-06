@@ -1,0 +1,37 @@
+---
+- name: Validate deployment inputs
+  hosts: all
+  gather_facts: true
+  any_errors_fatal: true
+  tasks:
+    - name: Require Ubuntu 24.04
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution == "Ubuntu"
+          - ansible_distribution_version is version('24.04', '>=')
+        fail_msg: This automation supports Ubuntu 24.04 or newer only.
+
+    - name: Validate profile and host variables
+      ansible.builtin.assert:
+        that:
+          - deployment_profile in ['low', 'medium', 'high']
+          - private_ip is defined
+          - private_network_cidr != '10.0.0.0/24' or private_ip is match('^10\\.0\\.0\\.')
+          - admin_cidr != '203.0.113.10/32'
+        fail_msg: Replace inventory addresses, private_network_cidr, and admin_cidr first.
+
+    - name: Require exactly three Kafka nodes
+      ansible.builtin.assert:
+        that:
+          - groups['kafka'] | length == 3
+          - groups['spark_master'] | length == 1
+          - groups['spark_workers'] | length == 2
+          - groups['controller'] | length == 1
+      run_once: true
+
+    - name: Require repository URL for controller installation
+      ansible.builtin.assert:
+        that:
+          - project_repository_url is not search('example.invalid')
+        fail_msg: Set project_repository_url in group_vars/all.yml.
+      when: inventory_hostname in groups['controller']
